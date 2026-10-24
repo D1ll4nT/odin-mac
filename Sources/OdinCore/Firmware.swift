@@ -67,8 +67,10 @@ public func extract(_ url: URL, into dir: URL) throws -> (members: [Member], ski
     if url.pathExtension.lowercased() == "smd" { throw FirmwareError(description: ".smd is not supported") }
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     let all = try run("/usr/bin/tar", ["-tf", url.path]).split(separator: "\n").map(String.init).filter { !$0.hasSuffix("/") }
-    let names = all.filter { !$0.contains("/") }
-    try run("/usr/bin/tar", ["-xf", url.path, "-C", dir.path] + names)
+    // Names come from the (untrusted) archive listing; `--` stops tar's option parser and the
+    // dash filter drops any member that would still be read as a flag.
+    let names = all.filter { !$0.contains("/") && !$0.hasPrefix("-") }
+    try run("/usr/bin/tar", ["-xf", url.path, "-C", dir.path, "--"] + names)
     return (try names.map { name in
         var file = dir.appendingPathComponent(name)
         if name.hasSuffix(".lz4") {
