@@ -38,9 +38,11 @@ phones or modern macOS.
 
 ## Requirements
 
-- macOS 13+, Apple Silicon or Intel.
+- macOS 13+, Apple Silicon or Intel, to flash a device.
+- Linux can build the tool and run `swift test`. Device discovery there
+  scans `/dev/ttyACM*` and `/dev/ttyUSB*` for Samsung's USB vendor ID.
 - [`lz4`](https://formulae.brew.sh/formula/lz4) for `.lz4` firmware:
-  `brew install lz4`.
+  `brew install lz4` or `apt install lz4`.
 
 ## Build
 

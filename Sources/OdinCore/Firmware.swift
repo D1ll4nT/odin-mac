@@ -1,5 +1,7 @@
-import CryptoKit
 import Foundation
+#if canImport(CryptoKit)
+import CryptoKit
+#endif
 
 public struct FirmwareError: Error, CustomStringConvertible {
     public let description: String
@@ -49,8 +51,8 @@ func run(_ exe: String, _ args: [String]) throws -> String {
 }
 
 func lz4Path() throws -> String {
-    for p in ["/opt/homebrew/bin/lz4", "/usr/local/bin/lz4", "/opt/local/bin/lz4"] where FileManager.default.isExecutableFile(atPath: p) { return p }
-    throw FirmwareError(description: "lz4 not found (brew install lz4)")
+    for p in ["/opt/homebrew/bin/lz4", "/usr/local/bin/lz4", "/opt/local/bin/lz4", "/usr/bin/lz4"] where FileManager.default.isExecutableFile(atPath: p) { return p }
+    throw FirmwareError(description: "lz4 not found (brew install lz4, or apt install lz4)")
 }
 
 public struct Member {
@@ -82,3 +84,109 @@ public func extract(_ url: URL, into dir: URL) throws -> (members: [Member], ski
         return Member(name: file.lastPathComponent, url: file, size: size)
     }, all.filter { $0.contains("/") })
 }
+
+#if !canImport(CryptoKit)
+/// Same `Insecure.MD5` calls as CryptoKit, for hosts that do not ship that module.
+enum Insecure {
+    struct MD5 {
+        private var a: UInt32 = 0x67452301
+        private var b: UInt32 = 0xEFCDAB89
+        private var c: UInt32 = 0x98BADCFE
+        private var d: UInt32 = 0x10325476
+        private var pending = [UInt8]()
+        private var total: UInt64 = 0
+
+        mutating func update(data: Data) {
+            total += UInt64(data.count)
+            pending.append(contentsOf: data)
+            var i = 0
+            while i + 64 <= pending.count {
+                process(Array(pending[i..<(i + 64)]))
+                i += 64
+            }
+            if i > 0 { pending.removeFirst(i) }
+        }
+
+        func finalize() -> [UInt8] {
+            var copy = self
+            copy.pending.append(0x80)
+            while copy.pending.count % 64 != 56 { copy.pending.append(0) }
+            var bits = copy.total &* 8
+            for _ in 0..<8 {
+                copy.pending.append(UInt8(truncatingIfNeeded: bits))
+                bits >>= 8
+            }
+            var i = 0
+            while i + 64 <= copy.pending.count {
+                copy.process(Array(copy.pending[i..<(i + 64)]))
+                i += 64
+            }
+            var out = [UInt8]()
+            out.reserveCapacity(16)
+            for v in [copy.a, copy.b, copy.c, copy.d] {
+                out.append(UInt8(truncatingIfNeeded: v))
+                out.append(UInt8(truncatingIfNeeded: v >> 8))
+                out.append(UInt8(truncatingIfNeeded: v >> 16))
+                out.append(UInt8(truncatingIfNeeded: v >> 24))
+            }
+            return out
+        }
+
+        private mutating func process(_ block: [UInt8]) {
+            var m = [UInt32](repeating: 0, count: 16)
+            for i in 0..<16 {
+                m[i] = UInt32(block[i * 4])
+                    | (UInt32(block[i * 4 + 1]) << 8)
+                    | (UInt32(block[i * 4 + 2]) << 16)
+                    | (UInt32(block[i * 4 + 3]) << 24)
+            }
+            var aa = a, bb = b, cc = c, dd = d
+            for i in 0..<64 {
+                let f: UInt32
+                let g: Int
+                if i < 16 {
+                    f = (bb & cc) | (~bb & dd)
+                    g = i
+                } else if i < 32 {
+                    f = (dd & bb) | (~dd & cc)
+                    g = (5 * i + 1) % 16
+                } else if i < 48 {
+                    f = bb ^ cc ^ dd
+                    g = (3 * i + 5) % 16
+                } else {
+                    f = cc ^ (bb | ~dd)
+                    g = (7 * i) % 16
+                }
+                let sum = aa &+ f &+ Self.k[i] &+ m[g]
+                let rotated = (sum << Self.s[i]) | (sum >> (32 - Self.s[i]))
+                aa = dd
+                dd = cc
+                cc = bb
+                bb = bb &+ rotated
+            }
+            a = a &+ aa
+            b = b &+ bb
+            c = c &+ cc
+            d = d &+ dd
+        }
+
+        private static let s: [UInt32] = [
+            7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+            5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
+            4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+            6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+        ]
+
+        private static let k: [UInt32] = [
+            0xD76AA478, 0xE8C7B756, 0x242070DB, 0xC1BDCEEE, 0xF57C0FAF, 0x4787C62A, 0xA8304613, 0xFD469501,
+            0x698098D8, 0x8B44F7AF, 0xFFFF5BB1, 0x895CD7BE, 0x6B901122, 0xFD987193, 0xA679438E, 0x49B40821,
+            0xF61E2562, 0xC040B340, 0x265E5A51, 0xE9B6C7AA, 0xD62F105D, 0x02441453, 0xD8A1E681, 0xE7D3FBC8,
+            0x21E1CDE6, 0xC33707D6, 0xF4D50D87, 0x455A14ED, 0xA9E3E905, 0xFCEFA3F8, 0x676F02D9, 0x8D2A4C8A,
+            0xFFFA3942, 0x8771F681, 0x6D9D6122, 0xFDE5380C, 0xA4BEEA44, 0x4BDECFA9, 0xF6BB4B60, 0xBEBFBC70,
+            0x289B7EC6, 0xEAA127FA, 0xD4EF3085, 0x04881D05, 0xD9D4D039, 0xE6DB99E5, 0x1FA27CF8, 0xC4AC5665,
+            0xF4292244, 0x432AFF97, 0xAB9423A7, 0xFC93A039, 0x655B59C3, 0x8F0CCC92, 0xFFEFF47D, 0x85845DD1,
+            0x6FA87E4F, 0xFE2CE6E0, 0xA3014314, 0x4E0811A1, 0xF7537E82, 0xBD3AF235, 0x2AD7D2BB, 0xEB86D391,
+        ]
+    }
+}
+#endif

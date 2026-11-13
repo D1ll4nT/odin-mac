@@ -58,7 +58,7 @@ final class OdinCoreTests: XCTestCase {
         try Data("z".utf8).write(to: dir.appendingPathComponent("meta-data/fota.zip"))
         let tar = dir.appendingPathComponent("AP_TEST.tar")
         try OdinCore.run("/usr/bin/tar", ["--format", "ustar", "-cf", tar.path, "-C", dir.path, "boot.img.lz4", "meta-data/fota.zip", "vbmeta.img"])
-        let hash = try OdinCore.run("/sbin/md5", ["-q", tar.path]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let hash = try systemMD5(tar)
         var bytes = try Data(contentsOf: tar)
         bytes += Data("\(hash)  AP_TEST.tar\n".utf8)
         let md5File = dir.appendingPathComponent("AP_TEST.tar.md5")
@@ -74,4 +74,16 @@ final class OdinCoreTests: XCTestCase {
         try bytes.write(to: md5File)
         XCTAssertThrowsError(try verifyMD5(md5File))
     }
+}
+
+/// macOS `md5 -q`, or GNU `md5sum` on Linux. The trailer must match the system tool, not only our hasher.
+private func systemMD5(_ url: URL) throws -> String {
+    if FileManager.default.isExecutableFile(atPath: "/sbin/md5") {
+        return try run("/sbin/md5", ["-q", url.path]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    let line = try run("/usr/bin/md5sum", [url.path])
+    guard let hex = line.split(whereSeparator: { $0 == " " || $0 == "\t" }).first else {
+        throw FirmwareError(description: "md5sum produced no hash")
+    }
+    return String(hex)
 }
