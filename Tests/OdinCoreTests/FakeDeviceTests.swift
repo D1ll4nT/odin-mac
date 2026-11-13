@@ -1,13 +1,42 @@
 import Foundation
 import XCTest
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 @testable import OdinCore
+
+private func sysRead(_ fd: Int32, _ buf: UnsafeMutableRawPointer, _ n: Int) -> Int {
+#if canImport(Darwin)
+    Darwin.read(fd, buf, n)
+#else
+    Glibc.read(fd, buf, n)
+#endif
+}
+
+private func sysWrite(_ fd: Int32, _ buf: UnsafeRawPointer, _ n: Int) -> Int {
+#if canImport(Darwin)
+    Darwin.write(fd, buf, n)
+#else
+    Glibc.write(fd, buf, n)
+#endif
+}
 
 /// Drives the real SerialPort + Session against a scripted fake bootloader on a pty pair.
 final class FakeDeviceTests: XCTestCase {
     func testFullSessionOverPty() throws {
         var master: Int32 = 0, slave: Int32 = 0
         XCTAssertEqual(openpty(&master, &slave, nil, nil, nil), 0)
+#if canImport(Darwin)
         let slavePath = String(cString: ptsname(master))
+#else
+        guard let tty = ttyname(slave) else {
+            XCTFail("ttyname(slave) failed")
+            return
+        }
+        let slavePath = String(cString: tty)
+#endif
 
         var pitBytes = [UInt8](repeating: 0, count: 28 + 132)
         func put(_ o: Int, _ v: UInt32) { for b in 0..<4 { pitBytes[o + b] = UInt8(truncatingIfNeeded: v >> (8 * b)) } }
@@ -17,11 +46,11 @@ final class FakeDeviceTests: XCTestCase {
 
         func readN(_ n: Int) -> [UInt8] {
             var b = [UInt8](repeating: 0, count: n), got = 0
-            while got < n { got += b.withUnsafeMutableBytes { Darwin.read(master, $0.baseAddress! + got, n - got) } }
+            while got < n { got += b.withUnsafeMutableBytes { sysRead(master, $0.baseAddress! + got, n - got) } }
             return b
         }
-        func reply(_ t: UInt32, _ v: UInt32) { let p = controlPacket(t, v); _ = p.withUnsafeBytes { Darwin.write(master, $0.baseAddress, 8) } }
-        func send(_ b: [UInt8]) { _ = b.withUnsafeBytes { Darwin.write(master, $0.baseAddress, b.count) } }
+        func reply(_ t: UInt32, _ v: UInt32) { let p = controlPacket(t, v); _ = p.withUnsafeBytes { sysWrite(master, $0.baseAddress!, 8) } }
+        func send(_ b: [UInt8]) { _ = b.withUnsafeBytes { sysWrite(master, $0.baseAddress!, b.count) } }
 
         var log: [[UInt32]] = []
         let device = Thread {

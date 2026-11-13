@@ -1,12 +1,35 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
+#if canImport(IOKit)
 import IOKit
 import IOKit.serial
+#endif
+
+private func sysRead(_ fd: Int32, _ buf: UnsafeMutableRawPointer, _ n: Int) -> Int {
+#if canImport(Darwin)
+    Darwin.read(fd, buf, n)
+#else
+    Glibc.read(fd, buf, n)
+#endif
+}
+
+private func sysWrite(_ fd: Int32, _ buf: UnsafeRawPointer, _ n: Int) -> Int {
+#if canImport(Darwin)
+    Darwin.write(fd, buf, n)
+#else
+    Glibc.write(fd, buf, n)
+#endif
+}
 
 public struct PortError: Error, CustomStringConvertible {
     public let description: String
 }
 
-/// Download Mode is CDC-ACM, so macOS exposes it as /dev/cu.usbmodem* — the same COM-port path Odin uses on Windows.
+/// Download Mode is CDC-ACM. macOS exposes it as /dev/cu.usbmodem*; Linux as /dev/ttyACM*.
 public final class SerialPort {
     let fd: Int32
 
@@ -26,6 +49,7 @@ public final class SerialPort {
 
     /// Serial devices whose USB parent is Samsung (VID 0x04E8); other usbmodem devices (monitors, dev boards) are ignored.
     public static func candidates() -> [String] {
+#if canImport(IOKit)
         var it: io_iterator_t = 0
         guard IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching(kIOSerialBSDServiceValue), &it) == KERN_SUCCESS else { return [] }
         defer { IOObjectRelease(it) }
@@ -39,12 +63,15 @@ public final class SerialPort {
             out.append(path)
         }
         return out.sorted()
+#else
+        return linuxSamsungPorts()
+#endif
     }
 
     public func write(_ bytes: [UInt8]) throws {
         var off = 0
         while off < bytes.count {
-            let n = bytes[off...].withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
+            let n = bytes[off...].withUnsafeBytes { sysWrite(fd, $0.baseAddress!, $0.count) }
             if n < 0 {
                 if errno == EINTR || errno == EAGAIN { continue }
                 throw PortError(description: "write: \(String(cString: strerror(errno)))")
@@ -65,7 +92,7 @@ public final class SerialPort {
             let r = poll(&p, 1, Int32(min(left, 1) * 1000))
             if r < 0, errno != EINTR { throw PortError(description: "poll: \(String(cString: strerror(errno)))") }
             if r <= 0 { continue }
-            let n = out.withUnsafeMutableBytes { Darwin.read(fd, $0.baseAddress! + got, count - got) }
+            let n = out.withUnsafeMutableBytes { sysRead(fd, $0.baseAddress! + got, count - got) }
             if n < 0, errno != EINTR, errno != EAGAIN { throw PortError(description: "read: \(String(cString: strerror(errno)))") }
             if n == 0, p.revents & Int16(POLLHUP) != 0 { throw PortError(description: "device disconnected") }
             got += max(n, 0)
@@ -73,3 +100,18 @@ public final class SerialPort {
         return out
     }
 }
+
+#if !canImport(IOKit)
+/// `/dev/ttyACM*` and `/dev/ttyUSB*` whose sysfs parent advertises USB vendor 04e8.
+private func linuxSamsungPorts() -> [String] {
+    guard let names = try? FileManager.default.contentsOfDirectory(atPath: "/dev") else { return [] }
+    return names.compactMap { name -> String? in
+        guard name.hasPrefix("ttyACM") || name.hasPrefix("ttyUSB") else { return nil }
+        // Keep the `..` in the string so the kernel resolves the device symlink before the parent.
+        guard let raw = try? String(contentsOfFile: "/sys/class/tty/\(name)/device/../idVendor", encoding: .utf8) else { return nil }
+        let vid = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard vid.caseInsensitiveCompare("04e8") == .orderedSame else { return nil }
+        return "/dev/\(name)"
+    }.sorted()
+}
+#endif
